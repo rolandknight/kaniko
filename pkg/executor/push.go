@@ -290,15 +290,40 @@ func makeTransport(opts *config.KanikoOptions, registryName string, loader syste
 		tr.(*http.Transport).TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true,
 		}
-	} else if certificatePath := opts.RegistriesCertificates[registryName]; certificatePath != "" {
+		// insecure - no need to check for ca or client cert
+		return tr
+	}
+
+	tlsConfig := &tls.Config{}
+
+	// check for ca cert
+	certificatePath := opts.RegistriesCertificates[registryName]
+	if certificatePath != "" {
 		systemCertPool := loader()
 		if err := systemCertPool.append(certificatePath); err != nil {
-			logrus.WithError(err).Warnf("Failed to load certificate %s for %s\n", certificatePath, registryName)
+			logrus.WithError(err).Warnf("Failed to load CA certificate %s for %s\n", certificatePath, registryName)
 		} else {
-			tr.(*http.Transport).TLSClientConfig = &tls.Config{
-				RootCAs: systemCertPool.value(),
-			}
+			tlsConfig.RootCAs = systemCertPool.value()
 		}
+	}
+
+	// check for client cert/key
+	clientCertPath := opts.RegistriesClientCerts[registryName]
+	if clientCertPath != "" {
+		// get key path by inserting -key in the name (ie client.pem -> client-key.pem)
+		clientKeyPath := clientCertPath[0:len(clientCertPath)-len(filepath.Ext(clientCertPath))] +
+			"-key" + filepath.Ext(clientCertPath)
+		cert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
+		if err != nil {
+			logrus.WithError(err).Warnf("Failed to load client certificate %s and key %s for %s\n", clientCertPath, clientKeyPath, registryName)
+		} else {
+			tlsConfig.Certificates = []tls.Certificate{cert}
+		}
+	}
+
+	// setup our tls client config
+	if len(tlsConfig.Certificates) > 0 || tlsConfig.RootCAs != nil {
+		tr.(*http.Transport).TLSClientConfig = tlsConfig
 	}
 	return tr
 }
